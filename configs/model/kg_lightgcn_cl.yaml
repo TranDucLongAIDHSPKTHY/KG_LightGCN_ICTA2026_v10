@@ -1,0 +1,19 @@
+# configs/model/kg_lightgcn_cl.yaml — v10
+# KG-LightGCN-CL Variant 2 (Enhanced) — This work
+# BPR + Cross-view CL (CF view vs KG view) + KG alignment loss.
+# Dùng kg_final.txt từ KGAT repo.
+model:
+  name: kg_lightgcn_cl
+  n_layers: 3
+  kg_n_layers: 2
+  kg_type: full
+  entity_agg: mean
+  kg_reg: 1.0e-5
+  eps: 0.1
+
+train:
+  early_stopping_patience: 10
+
+contrastive:
+  temperature: 0.2
+  lambda_cl: 0.5

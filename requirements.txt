@@ -1,0 +1,14 @@
+# KG-LightGCN ICTA2026 v10 — Python dependencies
+# Nguồn dữ liệu: KGAT repo (xiangwang1223)
+# 
+# Cài PyTorch riêng theo CUDA version:
+#   GPU CUDA 11.8: pip install torch==2.1.2 --index-url https://download.pytorch.org/whl/cu118
+#   CPU only:      pip install torch==2.1.2 --index-url https://download.pytorch.org/whl/cpu
+
+numpy>=1.23,<2.0
+scipy>=1.9,<2.0
+scikit-learn>=1.1
+pyyaml>=6.0
+tqdm>=4.64
+# Optional: để hiển thị RAM trong log_experiment_setup.py
+# psutil>=5.9

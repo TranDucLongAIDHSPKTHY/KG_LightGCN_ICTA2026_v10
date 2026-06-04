@@ -1,0 +1,16 @@
+# configs/model/simgcl.yaml — v10
+# SimGCL — Yu et al., SIGIR 2022
+model:
+  name: simgcl
+  n_layers: 3
+  eps: 0.1
+  apply_item_cl: true
+
+train:
+  weight_decay: 0.0
+  manual_l2_reg: 1.0e-4
+  early_stopping_patience: 10
+
+contrastive:
+  temperature: 0.2
+  lambda_cl: 0.5

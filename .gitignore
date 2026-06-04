@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+.eggs/
+
+# Data (không commit raw/unified data — quá lớn)
+/data/
+*.json.gz
+*.zip
+
+# Kết quả (commit selective)
+results/checkpoints/
+results/logs/
+
+# Environment
+.env
+*.pyc
+.DS_Store

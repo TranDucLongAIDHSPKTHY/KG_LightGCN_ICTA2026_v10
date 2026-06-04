@@ -1,0 +1,75 @@
+# configs/base.yaml — v10
+# BASE CONFIGURATION — dùng chung cho TẤT CẢ models (fairness constraint)
+#
+# THAY ĐỔI v10 so với v7:
+#   - data_dir trỏ đến /data/phuongtran/project_v10/unified/
+#   - split_file: valid.txt (không còn val.txt)
+#   - data_source: kgat_repo (không dùng lightgcn/simgcl/kgcl repo)
+#   - eval_protocol: full (bắt buộc, sampled chỉ cho Appendix)
+#   - kg_source: kg_final.txt (không build lại)
+#
+# Override priority (high → low):
+#   CLI --override  >  model YAML  >  this file  >  .env  >  default
+# ─────────────────────────────────────────────────────────────────────────────
+
+dataset:
+  name: amazon-book # amazon-book | yelp2018
+  data_source: kgat_repo # KGAT repo là nguồn DUY NHẤT — v10
+  raw_dir: /data/phuongtran/project_v10/raw
+  data_dir: /data/phuongtran/project_v10/unified
+
+  cold_split: null # null | cold_10 | cold_20 | cold_30
+  kg_type: full # full | category | brand | none
+
+  # [v10] Split protocol — gộp KGAT train+test rồi chia lại 80/10/10, seed=42
+  split_protocol: "80/10/10-unified"
+  split_seed: 42
+  # KHÔNG dùng 5-core filter vì KGAT đã pre-filter (10-core cho amazon-book)
+
+  # [v10] File names — dùng valid.txt thay vì val.txt
+  train_file: train.txt
+  valid_file: valid.txt # ← THAY ĐỔI từ val.txt
+  test_file: test.txt
+  kg_file: kg_final.txt # ← KGAT format (không phải kg_full.txt)
+
+  # Bất biến bắt buộc:
+  # assert max(all_item_ids) < n_items  (item_id == entity_id theo KGAT)
+
+model:
+  name: lightgcn
+  embedding_dim: 64 # HARD CONSTRAINT — không được override
+  n_layers: 3
+
+train:
+  epochs: 1000
+  batch_size: 2048
+  learning_rate: 0.001
+  optimizer: adam
+  weight_decay: 1.0e-4
+  neg_samples: 1
+  early_stopping_patience: 10
+  early_stopping_metric: recall@20
+  seed: 42
+  device: auto # auto | cpu | cuda | cuda:0
+  num_workers: 4
+  max_grad_norm: 1.0 # gradient clipping — tất cả models
+
+eval:
+  batch_size: 2048
+  top_k: [10, 20]
+  eval_protocol: full # [v10] "full" = toàn bộ items; "sampled" chỉ Appendix
+  eval_interval: 5
+  # full ranking = candidate pool là toàn bộ items chưa tương tác trong training
+
+contrastive:
+  temperature: 0.2 # τ = 0.2 cố định theo Fairness Sheet
+  lambda_cl: 0.5
+
+logging:
+  log_dir: results/logs
+  checkpoint_dir: results/checkpoints
+  result_dir: results/tables
+  log_interval: 1
+
+reproducibility:
+  seeds: [42, 0, 1, 2, 3] # 5 seeds → report mean ± std

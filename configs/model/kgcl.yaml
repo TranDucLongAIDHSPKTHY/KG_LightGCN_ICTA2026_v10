@@ -1,0 +1,18 @@
+# configs/model/kgcl.yaml — v10
+# KGCL — Yang et al., SIGIR 2022
+model:
+  name: kgcl
+  n_layers: 3
+  kg_n_layers: 2
+  temp: 0.2
+  kg_p_drop: 0.5
+  ui_p_drop: 0.05
+  lambda_kg: 0.1
+
+train:
+  weight_decay: 1.0e-4
+  early_stopping_patience: 10
+
+contrastive:
+  temperature: 0.2
+  lambda_cl: 0.1

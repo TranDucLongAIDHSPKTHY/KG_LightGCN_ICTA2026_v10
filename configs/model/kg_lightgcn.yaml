@@ -1,0 +1,14 @@
+# configs/model/kg_lightgcn.yaml — v10
+# KG-LightGCN Variant 1 (Base) — This work
+# BPR + KG enrichment. Dùng kg_final.txt từ KGAT repo.
+# Bất biến: item_id == entity_id (KGAT convention)
+model:
+  name: kg_lightgcn
+  n_layers: 3
+  kg_n_layers: 2
+  kg_type: full
+  entity_agg: mean
+  kg_reg: 1.0e-5
+
+train:
+  early_stopping_patience: 10

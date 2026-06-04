@@ -1,0 +1,10 @@
+# configs/model/lightgcn.yaml — v10
+# LightGCN — He et al., SIGIR 2020
+# Paper defaults: lr=0.001, decay=1e-4, layers=3, dim=64, batch=2048
+model:
+  name: lightgcn
+  n_layers: 3
+
+train:
+  weight_decay: 1.0e-4
+  early_stopping_patience: 10
