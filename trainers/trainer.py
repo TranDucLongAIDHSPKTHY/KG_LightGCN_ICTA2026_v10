@@ -56,6 +56,10 @@ class Trainer:
         log_cfg   = cfg.get("logging",     {})
         cl_cfg    = cfg.get("contrastive", {})
 
+        self.manual_l2_reg  = float(train_cfg.get("manual_l2_reg",          0.0))
+        self.num_workers    = int(train_cfg.get("num_workers",               0))   
+        self.embedding_dim = int(train_cfg.get("embedding_dim",            64)) 
+        self.eval_interval  = int(eval_cfg.get("eval_interval",              5))
         self.lr             = float(train_cfg.get("learning_rate",          1e-3))
         self.weight_decay   = float(train_cfg.get("weight_decay",           1e-4))
         self.epochs         = int(train_cfg.get("epochs",                  1000))
@@ -67,7 +71,6 @@ class Trainer:
         self.log_interval   = int(log_cfg.get("log_interval",               1))
         self.temperature    = float(cl_cfg.get("temperature",               0.2))
         self.lambda_cl      = float(cl_cfg.get("lambda_cl",                 0.5))
-        self.num_workers     = int(train_cfg.get("num_workers",             0))
 
         self.model_name   = self.model.__class__.__name__.lower()
         self.dataset_name = cfg.get("dataset", {}).get("name", "unknown")
@@ -89,6 +92,7 @@ class Trainer:
         run_logger     = get_run_logger(
             self.model_name, self.dataset_name, seed,
             base_log_dir=self.log_dir)
+        
         epoch_logger   = EpochLogger(
             run_logger, self.model_name, self.dataset_name,
             seed, base_log_dir=self.log_dir)
@@ -112,11 +116,14 @@ class Trainer:
 
         run_logger.info(
             f"  LR      : {self.lr} | WD: {self.weight_decay}")
+        
+        run_logger.info(
+            f"  LAYERS  : {self.model.n_layers} | EMB_DIM: {self.model.embedding_dim}")  
         if hasattr(self.model, 'kg_n_layers'):
             run_logger.info(f"  KG_LAYERS: {self.model.kg_n_layers}")
-
-        run_logger.info(f"  WORKERS: {self.num_workers}")
-
+        run_logger.info (
+            f"  NUM_WORKERS: {self.num_workers}"
+        )
         run_logger.info(f"  PARAMS  : {self.model.parameter_count():,}")
         run_logger.info("=" * 65)
 
