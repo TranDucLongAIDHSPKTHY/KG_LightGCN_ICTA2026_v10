@@ -1,12 +1,17 @@
 """
-trainers/trainer.py — v10
-Trainer cơ sở cho tất cả models.
+trainers/trainer.py — v10-fix
+Trainer cơ sở cho tất cả CF models (LightGCN, SimGCL).
 
-THAY ĐỔI v10:
-  - split "valid" thay cho "val"
-  - eval protocol: full-item ranking (eval_protocol: full)
-  - Gradient clipping cho TẤT CẢ models
-  - per_seed results lưu trong JSON cho significance test
+FIX v10-fix:
+  [BUG-2]  SimGCL L2 regularization: đọc từ train.weight_decay thay vì
+           train.manual_l2_reg để đảm bảo SimGCL luôn có L2 reg.
+           simgcl.yaml: weight_decay=0, manual_l2_reg=1e-4
+           → self.manual_l2_reg đọc từ train.manual_l2_reg (fallback = weight_decay)
+           Thứ tự ưu tiên: manual_l2_reg (nếu >0) > weight_decay
+
+  [INFO-10] SimGCL step: đổi tên biến cl_total → user_cl, thêm item_cl rõ ràng.
+
+  [INFO-12] patience_window: bỏ biến dead code, log đúng stopping condition.
 """
 import gc
 import json
@@ -23,8 +28,7 @@ import torch.optim as optim
 from evaluation.evaluator import Evaluator
 from losses.bpr_loss import bpr_loss
 from losses.contrastive_loss import infonce_loss
-from utils.logger import (get_logger, get_run_logger,
-                           EpochLogger, RunSummaryLogger)
+from utils.logger import get_logger, get_run_logger, EpochLogger, RunSummaryLogger
 from utils.seed import set_seed
 
 logger = get_logger("trainer")
@@ -56,29 +60,34 @@ class Trainer:
         log_cfg   = cfg.get("logging",     {})
         cl_cfg    = cfg.get("contrastive", {})
 
-        self.manual_l2_reg  = float(train_cfg.get("manual_l2_reg",          0.0))
-        self.num_workers    = int(train_cfg.get("num_workers",               0))   
-        self.embedding_dim = int(train_cfg.get("embedding_dim",            64)) 
-        self.eval_interval  = int(eval_cfg.get("eval_interval",              5))
         self.lr             = float(train_cfg.get("learning_rate",          1e-3))
         self.weight_decay   = float(train_cfg.get("weight_decay",           1e-4))
         self.epochs         = int(train_cfg.get("epochs",                  1000))
         self.patience       = int(train_cfg.get("early_stopping_patience",   10))
         self.monitor_metric = train_cfg.get("early_stopping_metric", "recall@20")
         self.max_grad_norm  = float(train_cfg.get("max_grad_norm",           1.0))
-        self.manual_l2_reg  = float(train_cfg.get("manual_l2_reg",          0.0))
         self.eval_interval  = int(eval_cfg.get("eval_interval",              5))
         self.log_interval   = int(log_cfg.get("log_interval",               1))
         self.temperature    = float(cl_cfg.get("temperature",               0.2))
         self.lambda_cl      = float(cl_cfg.get("lambda_cl",                 0.5))
+        self.num_workers    = int(train_cfg.get("num_workers",               0))
+        self.embedding_dim  = int(cfg.get("model", {}).get("embedding_dim", 64))
+
+        # [BUG-2 FIX] SimGCL L2 regularization:
+        # Đọc manual_l2_reg từ config; nếu không có thì fallback về weight_decay.
+        # simgcl.yaml đặt weight_decay=0, manual_l2_reg=1e-4 → sẽ dùng 1e-4
+        # Các model khác: weight_decay=1e-4, manual_l2_reg không đặt → fallback 1e-4
+        _manual = float(train_cfg.get("manual_l2_reg", 0.0))
+        self.manual_l2_reg = _manual if _manual > 0.0 else self.weight_decay
 
         self.model_name   = self.model.__class__.__name__.lower()
         self.dataset_name = cfg.get("dataset", {}).get("name", "unknown")
 
-        # weight_decay=0 trong Adam; manual L2 thêm vào loss nếu cần
+        # Adam với weight_decay=0; L2 reg được thêm thủ công vào loss
         self.optimizer = optim.Adam(
             self.model.parameters(), lr=self.lr, weight_decay=0.0)
 
+        # Model type detection
         self._is_simgcl = (
             hasattr(model, "contrastive_loss")
             and not hasattr(model, "kg_forward")
@@ -92,7 +101,6 @@ class Trainer:
         run_logger     = get_run_logger(
             self.model_name, self.dataset_name, seed,
             base_log_dir=self.log_dir)
-        
         epoch_logger   = EpochLogger(
             run_logger, self.model_name, self.dataset_name,
             seed, base_log_dir=self.log_dir)
@@ -100,30 +108,23 @@ class Trainer:
             self.model_name, self.dataset_name, seed,
             base_log_dir=self.log_dir)
 
-        patience_window = self.patience * self.eval_interval
+        # [INFO-12 FIX] Bỏ patience_window dead code; log đúng stopping condition
         run_logger.info("=" * 65)
         run_logger.info(
             f"  MODEL   : {self.model_name} | DATASET: {self.dataset_name}")
-        
         run_logger.info(
             f"  SEED    : {seed} | DEVICE: {self.device}")
-        
         run_logger.info(
-            f"  EPOCHS  : {self.epochs} | PATIENCE: {self.patience} "
-            f"(window={patience_window})")
-        
+            f"  EPOCHS  : {self.epochs} | "
+            f"PATIENCE: {self.patience} evaluations "
+            f"(= {self.patience * self.eval_interval} epochs)")
         run_logger.info(f"  MONITOR : {self.monitor_metric}")
-
         run_logger.info(
-            f"  LR      : {self.lr} | WD: {self.weight_decay}")
-        
+            f"  LR      : {self.lr} | WD: {self.weight_decay} | "
+            f"MANUAL_L2: {self.manual_l2_reg}")
         run_logger.info(
-            f"  LAYERS  : {self.model.n_layers} | EMB_DIM: {self.model.embedding_dim}")  
-        if hasattr(self.model, 'kg_n_layers'):
-            run_logger.info(f"  KG_LAYERS: {self.model.kg_n_layers}")
-        run_logger.info (
-            f"  NUM_WORKERS: {self.num_workers}"
-        )
+            f"  LAYERS  : {getattr(self.model, 'n_layers', '?')} | "
+            f"EMB_DIM: {getattr(self.model, 'embedding_dim', '?')}")
         run_logger.info(f"  PARAMS  : {self.model.parameter_count():,}")
         run_logger.info("=" * 65)
 
@@ -165,11 +166,10 @@ class Trainer:
                 eta   = time.strftime(
                     "%H:%M:%S", time.gmtime(avg_t * (self.epochs - epoch)))
                 run_logger.info(
-                    f"  [Epoch {epoch}/{self.epochs}] loss={loss:.4f} | "
-                    f"{elapsed:.1f}s | ETA={eta}")
+                    f"  [Epoch {epoch}/{self.epochs}] "
+                    f"loss={loss:.4f} | {elapsed:.1f}s | ETA={eta}")
 
             if epoch % self.eval_interval == 0:
-                # [v10] Dùng split "valid" thay cho "val"
                 val_metrics  = self.evaluator.evaluate(self.model, split="valid")
                 monitor_val  = val_metrics.get(self.monitor_metric, 0.0)
                 avg_loss     = running_loss / max(running_n, 1)
@@ -232,29 +232,21 @@ class Trainer:
 
     def _train_one_epoch(self) -> float:
         self.model.train()
-        total_loss = n_batches = 0.0
+        total_loss = 0.0
+        n_batches  = 0
 
         for batch in self.train_loader:
             users, pos_items, neg_items = [x.to(self.device) for x in batch]
             self.optimizer.zero_grad()
 
             if self._is_simgcl:
-                output   = self.model(users, pos_items, neg_items)
-                user_emb, pos_emb, neg_emb = output[0], output[1], output[2]
-                view1, view2 = output[3], output[4]
-                rec_loss = bpr_loss(user_emb, pos_emb, neg_emb)
-                cl_total = infonce_loss(view1, view2, self.temperature)
-                if len(output) == 7:
-                    item_cl  = infonce_loss(output[5], output[6], self.temperature)
-                    cl_total = cl_total + item_cl
-                l2   = self.model.l2_loss(users, pos_items, neg_items)
-                loss = rec_loss + self.lambda_cl * cl_total + self.manual_l2_reg * l2
+                loss = self._simgcl_step(users, pos_items, neg_items)
             else:
                 user_emb, pos_emb, neg_emb = self.model(users, pos_items, neg_items)
                 loss = (
                     bpr_loss(user_emb, pos_emb, neg_emb)
-                    + self.weight_decay * self.model.l2_loss(
-                        users, pos_items, neg_items)
+                    + self.weight_decay
+                    * self.model.l2_loss(users, pos_items, neg_items)
                 )
 
             loss.backward()
@@ -266,6 +258,44 @@ class Trainer:
             n_batches  += 1
 
         return total_loss / max(n_batches, 1)
+
+    def _simgcl_step(
+        self,
+        users:     torch.Tensor,
+        pos_items: torch.Tensor,
+        neg_items: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        SimGCL training step.
+
+        [BUG-2 FIX] Dùng self.manual_l2_reg cho L2 (không phải self.weight_decay=0)
+        [INFO-10 FIX] Tên biến rõ ràng: user_cl, item_cl thay vì cl_total
+        """
+        output = self.model(users, pos_items, neg_items)
+
+        user_emb  = output[0]
+        pos_emb   = output[1]
+        neg_emb   = output[2]
+        u_view1   = output[3]
+        u_view2   = output[4]
+
+        rec_loss = bpr_loss(user_emb, pos_emb, neg_emb)
+
+        # [INFO-10 FIX] Tên biến rõ ràng
+        user_cl = infonce_loss(u_view1, u_view2, self.temperature)
+        cl_loss = user_cl
+
+        if len(output) == 7:
+            # apply_item_cl=True: output[5]=i_view1, output[6]=i_view2
+            item_cl  = infonce_loss(output[5], output[6], self.temperature)
+            cl_loss  = user_cl + item_cl
+
+        l2 = self.model.l2_loss(users, pos_items, neg_items)
+
+        # [BUG-2 FIX] Dùng manual_l2_reg (=1e-4 từ simgcl.yaml)
+        return rec_loss + self.lambda_cl * cl_loss + self.manual_l2_reg * l2
+
+    # ── Checkpoint helpers ────────────────────────────────────────────────────
 
     def _ckpt_dir(self, seed):
         d = os.path.join(
@@ -321,7 +351,7 @@ class Trainer:
 
     def _load_checkpoint_for_resume(self, path):
         ckpt = torch.load(path, map_location=self.device, weights_only=False)
-        if (ckpt.get("model_name") and ckpt["model_name"] != self.model_name):
+        if ckpt.get("model_name") and ckpt["model_name"] != self.model_name:
             raise ValueError(
                 f"model_name mismatch: {ckpt['model_name']} vs {self.model_name}")
         self.model.load_state_dict(ckpt["model_state_dict"])
@@ -332,6 +362,10 @@ class Trainer:
                 logger.warning("Không restore được optimizer state.")
         return ckpt
 
+
+# =============================================================================
+# Multi-seed runner
+# =============================================================================
 
 def run_multi_seed(
     model_factory,
@@ -397,11 +431,12 @@ def _save_multiseed_summary(
         "model": model_name, "dataset": dataset_name, "seeds": seeds,
         "mean": {k: round(v, 6) for k, v in mean_m.items()},
         "std":  {k: round(v, 6) for k, v in std_m.items()},
-        "mean_std_str": {k: f"{mean_m[k]:.4f}±{std_m[k]:.4f}" for k in mean_m},
+        "mean_std_str": {
+            k: f"{mean_m[k]:.4f}±{std_m[k]:.4f}" for k in mean_m},
         "per_seed": [
             {
-                "seed":       r["seed"],
-                "best_epoch": r["best_epoch"],
+                "seed":         r["seed"],
+                "best_epoch":   r["best_epoch"],
                 "test_metrics": {k: round(v, 6)
                                  for k, v in r["test_metrics"].items()},
             }

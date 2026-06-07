@@ -1,31 +1,29 @@
 """
-scripts/sensitivity_analysis.py — v10 [T4.2]
-═══════════════════════════════════════════════════════════════════════════════
+scripts/sensitivity_analysis.py — v10-fix [T4.2]
 Sensitivity analysis cho KG-LightGCN-CL (BLOCKING prerequisite cho Tuần 5).
 
-Phân tích:
+FIX v10-fix:
+  [BUG-5] Xóa def Tuple_str() — là fake type alias gây confusion và dead code.
+          Sửa return annotation của write_sensitivity_report thành -> str.
+
+Grid:
   K (CF n_layers)      ∈ {1, 2, 3, 4}
-  d (embedding_dim)    ∈ {32, 64, 128, 256}  [d=64 là hard constraint — không thay đổi cho eval]
+  d (embedding_dim)    ∈ {32, 64, 128, 256}
   λ (lambda_cl)        ∈ {0.01, 0.05, 0.1, 0.5, 1.0}
   kg_n_layers          ∈ {1, 2, 3}
   kg_reg               ∈ {1e-6, 1e-5, 1e-4}
 
-Output (bắt buộc):
+Output bắt buộc:
   results/sensitivity_K.png
   results/sensitivity_d.png
   results/sensitivity_results.md    ← ghi rõ K* và λ*
   results/sensitivity_lambda_range.md
-
-Usage:
-  python scripts/sensitivity_analysis.py --dataset amazon-book --param all
-  python scripts/sensitivity_analysis.py --dataset amazon-book --param n_layers
-  python scripts/sensitivity_analysis.py --dataset amazon-book --param lambda_cl
 """
-
 import argparse
 import json
 import os
 import sys
+from typing import Dict, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from main import train_model
@@ -34,44 +32,49 @@ from utils.logger import get_script_logger
 
 logger = get_script_logger("sensitivity_v10")
 
-GRID = {
-    "n_layers":    [1, 2, 3, 4],
-    "kg_n_layers": [1, 2, 3],
+GRID: Dict[str, list] = {
+    "n_layers":      [1, 2, 3, 4],
+    "kg_n_layers":   [1, 2, 3],
     "embedding_dim": [32, 64, 128, 256],
-    "lambda_cl":   [0.01, 0.05, 0.1, 0.5, 1.0],
-    "kg_reg":      [1e-6, 1e-5, 1e-4],
+    "lambda_cl":     [0.01, 0.05, 0.1, 0.5, 1.0],
+    "kg_reg":        [1e-6, 1e-5, 1e-4],
 }
 
-FAST_SEEDS = [42]   # 1 seed cho sensitivity (nhanh); Tuần 5 dùng 5 seeds
+FAST_SEEDS = [42]   # 1 seed cho sensitivity (nhanh); full experiments dùng 5 seeds
+
+# Key mapping từ param name → config key
+_KEY_MAP: Dict[str, str] = {
+    "n_layers":      "model.n_layers",
+    "kg_n_layers":   "model.kg_n_layers",
+    "embedding_dim": "model.embedding_dim",
+    "lambda_cl":     "contrastive.lambda_cl",
+    "kg_reg":        "model.kg_reg",
+}
 
 
-def run_sweep(param: str, values, dataset: str, result_dir: str) -> dict:
+def run_sweep(
+    param:      str,
+    values:     list,
+    dataset:    str,
+    result_dir: str,
+) -> Dict[str, Dict]:
     logger.info(f"\n{'='*60}\nSensitivity: {param} ∈ {values}\n{'='*60}")
-    sweep = {}
+    sweep: Dict[str, Dict] = {}
 
     for val in values:
         logger.info(f"  {param} = {val}")
-
-        key_map = {
-            "n_layers":      "model.n_layers",
-            "kg_n_layers":   "model.kg_n_layers",
-            "embedding_dim": "model.embedding_dim",
-            "lambda_cl":     "contrastive.lambda_cl",
-            "kg_reg":        "model.kg_reg",
-        }
         overrides = {
-            "dataset.name": dataset,
-            key_map[param]: val,
+            "dataset.name":    dataset,
+            _KEY_MAP[param]:   val,
         }
-
         cfg = load_config(
             base_path         = "configs/base.yaml",
             model_config_path = "configs/model/kg_lightgcn_cl.yaml",
             overrides         = overrides,
         )
-        results   = train_model(
+        results          = train_model(
             model_name="kg_lightgcn_cl", cfg=cfg, seeds=FAST_SEEDS)
-        sweep[str(val)] = results.get("mean", {})
+        sweep[str(val)]  = results.get("mean", {})
 
     os.makedirs(result_dir, exist_ok=True)
     out_path = os.path.join(result_dir, f"sensitivity_{param}.json")
@@ -93,22 +96,29 @@ def run_sweep(param: str, values, dataset: str, result_dir: str) -> dict:
 
 
 def write_sensitivity_report(
-    all_sweeps: dict, result_dir: str
-) -> Tuple_str:
-    """Ghi sensitivity_results.md với K* và λ*."""
+    all_sweeps: Dict[str, Dict],
+    result_dir: str,
+) -> str:                                   # [BUG-5 FIX] return type là str
+    """
+    Ghi sensitivity_results.md với K* và λ* được xác định.
+
+    Returns:
+        str: path đến file output
+    """
     lines = [
         "# Sensitivity Analysis — KG-LightGCN-CL v10\n",
         "**LƯU Ý:** Tuần 5 KHÔNG được bắt đầu trước khi có K* và λ* từ file này.\n\n",
         "## Kết quả\n",
     ]
 
-    best_vals = {}
+    best_vals: Dict[str, Optional[str]] = {}
+
     for param, sweep in all_sweeps.items():
         lines.append(f"### {param}\n")
-        lines.append(f"| Value | recall@20 | ndcg@20 | hr@10 |")
-        lines.append(f"|-------|-----------|---------|-------|")
-        best_r20 = -1
-        best_val = None
+        lines.append("| Value | recall@20 | ndcg@20 | hr@10 |")
+        lines.append("|-------|-----------|---------|-------|")
+        best_r20 = -1.0
+        best_val: Optional[str] = None
         for val, metrics in sweep.items():
             r = metrics.get("recall@20", float("nan"))
             n = metrics.get("ndcg@20",   float("nan"))
@@ -118,7 +128,8 @@ def write_sensitivity_report(
                 best_r20 = r
                 best_val = val
         best_vals[param] = best_val
-        lines.append(f"\n**{param} tốt nhất = {best_val}** (recall@20={best_r20:.6f})\n")
+        lines.append(
+            f"\n**{param} tốt nhất = {best_val}** (recall@20={best_r20:.6f})\n")
 
     lines.append("\n## Kết luận\n")
     for param, val in best_vals.items():
@@ -136,7 +147,7 @@ def write_sensitivity_report(
         f.write(content)
     logger.info(f"✓ sensitivity_results.md → {out_path}")
 
-    # Lambda range
+    # Lambda range file
     if "lambda_cl" in all_sweeps:
         lambda_path = os.path.join(result_dir, "sensitivity_lambda_range.md")
         with open(lambda_path, "w") as f:
@@ -150,16 +161,12 @@ def write_sensitivity_report(
             f.write(f"\n**λ tốt nhất = {best_lambda}**\n")
         logger.info(f"✓ sensitivity_lambda_range.md → {lambda_path}")
 
-    return out_path
+    return out_path          # [BUG-5 FIX] trả về str (path), không phải fake type
 
 
-def Tuple_str(x: str) -> str:
-    return x
-
-
-def parse_args():
+def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Sensitivity Analysis v10 [T4.2] — BLOCKING cho Tuần 5")
+        description="Sensitivity Analysis v10-fix [T4.2] — BLOCKING cho Tuần 5")
     p.add_argument("--dataset",    default="amazon-book")
     p.add_argument(
         "--param",
@@ -168,20 +175,20 @@ def parse_args():
     )
     p.add_argument("--result_dir", default="results/tables")
     p.add_argument("--fast",       action="store_true",
-                   help="Chạy 1 seed thay vì 3 seeds")
+                   help="Chạy 1 seed thay vì 3 seeds (default với FAST_SEEDS)")
     return p.parse_args()
 
 
-def main():
-    args = parse_args()
+def main() -> None:
+    args   = parse_args()
     params = list(GRID) if args.param == "all" else [args.param]
 
-    all_sweeps = {}
+    all_sweeps: Dict[str, Dict] = {}
     for param in params:
         sweep = run_sweep(param, GRID[param], args.dataset, args.result_dir)
         all_sweeps[param] = sweep
 
-    if len(all_sweeps) > 0:
+    if all_sweeps:
         write_sensitivity_report(all_sweeps, args.result_dir)
 
     logger.info(

@@ -8,16 +8,16 @@
 
 ## Thay đổi chính v10 so với v7
 
-| Thay đổi       | v7                          | v10                                       |
-| -------------- | --------------------------- | ----------------------------------------- |
-| Nguồn dữ liệu  | LightGCN + KGCL repos       | **KGAT repo DUY NHẤT**                    |
-| KG file        | kg_full.txt (build lại)     | **kg_final.txt (KGAT gốc)**               |
-| Split files    | val.txt                     | **valid.txt**                             |
-| Cold split     | cold_items.txt, test.txt    | **cold_item_ids.txt, test_cold.txt**      |
-| Paths          | /data/phuongtran/processed/ | **/data/phuongtran/project_v10/**         |
-| Item-Entity    | item2entity.json            | **item_id == entity_id (KGAT invariant)** |
-| KG build       | build_kg_from_meta()        | **Copy kg_final.txt trực tiếp**           |
-| Cold evaluator | cold_items.txt              | **cold_item_ids.txt + test_cold.txt**     |
+| Thay đổi | v7 | v10 |
+|----------|-----|-----|
+| Nguồn dữ liệu | LightGCN + KGCL repos | **KGAT repo DUY NHẤT** |
+| KG file | kg_full.txt (build lại) | **kg_final.txt (KGAT gốc)** |
+| Split files | val.txt | **valid.txt** |
+| Cold split | cold_items.txt, test.txt | **cold_item_ids.txt, test_cold.txt** |
+| Paths | /data/phuongtran/processed/ | **/data/phuongtran/project_v10/** |
+| Item-Entity | item2entity.json | **item_id == entity_id (KGAT invariant)** |
+| KG build | build_kg_from_meta() | **Copy kg_final.txt trực tiếp** |
+| Cold evaluator | cold_items.txt | **cold_item_ids.txt + test_cold.txt** |
 
 ---
 
@@ -126,7 +126,6 @@ Files cần thiết:
 ```
 
 **KHÔNG dùng:**
-
 - ~~LightGCN-PyTorch repo (gusye1234)~~ — v7 cũ
 - ~~SimGCL/QRec repo~~ — v7 cũ
 - ~~KGCL-SIGIR22 repo~~ — v7 cũ
@@ -169,14 +168,14 @@ cp .env.example .env
 ### Bước 1 — Download dữ liệu (KGAT repo)
 
 ```bash
-python scripts/download_data.py --dataset all --raw_dir /data/phuongtran/project_v10/raw
+python scripts/download_data.py --dataset all \
+    --raw_dir /data/phuongtran/project_v10/raw
 
 # Kiểm tra files
 python scripts/download_data.py --dataset all --check_only
 ```
 
 > Nếu auto-download thất bại:
->
 > ```bash
 > git clone https://github.com/xiangwang1223/knowledge_graph_attention_network
 > cp -r knowledge_graph_attention_network/Data/amazon-book /data/phuongtran/project_v10/raw/
@@ -186,11 +185,13 @@ python scripts/download_data.py --dataset all --check_only
 ### Bước 2 — Preprocessing (Chạy MỘT LẦN — đóng băng)
 
 ```bash
-python scripts/preprocess.py --dataset all --raw_dir /data/phuongtran/project_v10/raw --out_dir /data/phuongtran/project_v10/unified
+python scripts/preprocess.py \
+    --dataset all \
+    --raw_dir /data/phuongtran/project_v10/raw \
+    --out_dir /data/phuongtran/project_v10/unified
 ```
 
 **Output (v10 format):**
-
 ```
 /data/phuongtran/project_v10/unified/amazon-book/
   ├── train.txt, valid.txt, test.txt  ← 80/10/10 split (gộp KGAT train+test)
@@ -204,11 +205,13 @@ python scripts/preprocess.py --dataset all --raw_dir /data/phuongtran/project_v1
 ### Bước 3 — Cold-start splits
 
 ```bash
-python scripts/build_cold_split.py --dataset all --data_dir /data/phuongtran/project_v10/unified --ratio 10 20 30 --seed 42
+python scripts/build_cold_split.py \
+    --dataset all \
+    --data_dir /data/phuongtran/project_v10/unified \
+    --ratio 10 20 30 --seed 42
 ```
 
 **Output (v10 format):**
-
 ```
 cold_20/
   ├── train.txt, valid.txt  ← cold_items đã xóa
@@ -218,16 +221,16 @@ cold_20/
 
 ### Bước 4 — Chạy tất cả baselines (5 seeds)
 
-"lightgcn", "simgcl", "kgat", "kgcl"
-
 ```bash
-python scripts/run_baselines.py --dataset amazon-book --seeds 42 0 1 2 3
+python scripts/run_baselines.py \
+    --dataset amazon-book --seeds 42 0 1 2 3
 ```
 
 ### Bước 5 — Sensitivity Analysis (BLOCKING cho Tuần 5)
 
 ```bash
-python scripts/sensitivity_analysis.py --dataset amazon-book --param all
+python scripts/sensitivity_analysis.py \
+    --dataset amazon-book --param all
 # Xem results/sensitivity_results.md để lấy K* và λ*
 ```
 
@@ -241,7 +244,9 @@ python main.py --model kg_lightgcn_cl  --dataset amazon-book --seeds 42 0 1 2 3
 ### Bước 7 — Entity Ablation A1/A2/A3/A4
 
 ```bash
-python scripts/run_ablation.py --dataset amazon-book --kg_types none,category,brand,full --seeds 42 0 1 2 3
+python scripts/run_ablation.py \
+    --dataset amazon-book --kg_types none,category,brand,full \
+    --seeds 42 0 1 2 3
 # hoặc:
 bash scripts/run_ablation.sh amazon-book
 ```
@@ -256,19 +261,26 @@ python main.py --model all --dataset yelp2018 --seeds 42 0 1 2 3
 
 ```bash
 # CHỈ chạy sau khi giáo viên đã duyệt Fairness Sheet
-python scripts/run_side_info_comparison.py --settings A,B,C --dataset amazon-book --seeds 42 0 1 2 3 --fairness_approved
+python scripts/run_side_info_comparison.py \
+    --settings A,B,C --dataset amazon-book --seeds 42 0 1 2 3 \
+    --fairness_approved
 ```
 
 ### Bước 10 — Cold-start Evaluation
 
 ```bash
-python scripts/run_cold_start.py --dataset amazon-book --levels cold_10 cold_20 cold_30 --models lightgcn kg_lightgcn_cl
+python scripts/run_cold_start.py \
+    --dataset amazon-book \
+    --levels cold_10 cold_20 cold_30 \
+    --models lightgcn kg_lightgcn_cl
 ```
 
 ### Bước 11 — Significance Tests
 
 ```bash
-python scripts/run_multiseed.py --compare kg_lightgcn_cl,lightgcn,kgcl --result_dir results/tables
+python scripts/run_multiseed.py \
+    --compare kg_lightgcn_cl,lightgcn,kgcl \
+    --result_dir results/tables
 # hoặc:
 python scripts/run_significance.py --dataset amazon-book
 ```
@@ -300,7 +312,6 @@ python scripts/diagnose_result_conflict.py --dataset amazon-book
 ## Protocol Details
 
 ### Split Protocol (80/10/10)
-
 - **Nguồn:** KGAT repo (xiangwang1223)
 - **Quy trình:** Gộp train.txt + test.txt của KGAT → full_interactions → chia 80/10/10
 - **Seed = 42** cố định cho reproducibility
@@ -308,7 +319,6 @@ python scripts/diagnose_result_conflict.py --dataset amazon-book
 - KGAT amazon-book đã 10-core filtered → không cần filter thêm
 
 ### Cold-Start Protocol (Induced)
-
 - Sample X% items làm cold_items (seed=42)
 - Xóa khỏi training → model không bao giờ thấy chúng
 - Evaluate trên interactions của cold_items trong test
@@ -316,7 +326,6 @@ python scripts/diagnose_result_conflict.py --dataset amazon-book
 - Tương thích TaxPro-CL (Phương) — cùng seed, cùng protocol
 
 ### Fairness Protocol
-
 - `embedding_dim = 64` — HARD constraint
 - `optimizer = Adam`, `lr = 0.001` (KGAT: 1e-4)
 - `batch_size = 2048`, `negative_sampling = 1`
@@ -326,7 +335,6 @@ python scripts/diagnose_result_conflict.py --dataset amazon-book
 - `temperature τ = 0.2` — cố định theo Fairness Sheet
 
 ### KGAT Invariant
-
 ```python
 # BẮT BUỘC giữ trong toàn bộ pipeline:
 assert max(all_item_ids) < n_items
@@ -356,4 +364,4 @@ Xem [CHANGELOG.md](CHANGELOG.md) để biết đầy đủ các thay đổi.
 
 ---
 
-_Version: v10 (ICTA2026) | Data source: KGAT repo | Author: TranDucLong — AIDHSPKTTHY_
+*Version: v10 (ICTA2026) | Data source: KGAT repo | Author: TranDucLong — AIDHSPKTTHY*

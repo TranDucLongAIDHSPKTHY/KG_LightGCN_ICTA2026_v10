@@ -1,20 +1,11 @@
 """
-evaluation/cold_evaluator.py — v10
+evaluation/cold_evaluator.py — v10-fix
 Cold-start evaluator theo induced cold-start protocol (T3.1).
 
-THAY ĐỔI v10 so với v7:
-  - cold_items.txt    → cold_item_ids.txt
-  - test.txt (cold)   → test_cold.txt
-  - valid.txt         thay cho val.txt
-  - Paths: /data/phuongtran/project_v10/unified/amazon-book/cold_XX/
-
-Protocol:
-  cold_item_ids.txt   = danh sách cold item IDs (seed=42, tương thích TaxPro-CL)
-  test_cold.txt       = chỉ chứa interactions của cold_items (từ original test.txt)
-  train.txt (unified) = dùng để mask training interactions
-
-Evaluation: candidate pool = cold_items ONLY.
-Metrics: HR@K_cold, NDCG@K_cold, Recall@K_cold.
+FIX v10-fix:
+  [PERF-9] Vectorize mask loop trong cold_start_eval.
+           Trước: Python loop O(B × n_cold) để set -inf cho seen items.
+           Sau:   Vectorized scatter bằng index_fill_ → O(B + seen_items).
 """
 import os
 from typing import Dict, List, Optional, Set
@@ -29,7 +20,7 @@ logger = get_logger("cold_evaluator")
 
 
 def load_cold_item_ids(cold_dir: str) -> Set[int]:
-    """[v10] Load cold item IDs từ cold_item_ids.txt (không phải cold_items.txt)."""
+    """Load cold item IDs từ cold_item_ids.txt."""
     path = os.path.join(cold_dir, "cold_item_ids.txt")
     if not os.path.exists(path):
         raise FileNotFoundError(
@@ -70,14 +61,17 @@ def cold_start_eval(
     top_k_list:       Optional[List[int]] = None,
 ) -> Dict[str, float]:
     """
-    Cold-start evaluation: chỉ score cold_items làm candidates.
-    Trả về metrics với hậu tố '_cold'.
+    Cold-start evaluation: candidate pool = cold_items ONLY.
+    Metrics trả về với hậu tố '_cold'.
+
+    [PERF-9 FIX] Mask train-seen items bằng vectorized scatter thay vì
+    Python loop O(B × n_cold).
     """
     if top_k_list is None:
         top_k_list = [10, 20]
     model.eval()
 
-    # test_cold.txt đã filter cold interactions
+    # Filter test data để chỉ giữ cold interactions
     cold_test: Dict[int, List[int]] = {}
     for uid, items in test_user2items.items():
         cold_gt = [i for i in items if i in cold_items]
@@ -93,7 +87,7 @@ def cold_start_eval(
 
     n_users_cold   = len(cold_test)
     n_pairs_cold   = sum(len(v) for v in cold_test.values())
-    cold_item_list = sorted(cold_items)
+    cold_item_list = sorted(cold_items)       # list cố định để index
     n_cold         = len(cold_item_list)
     max_k          = max(top_k_list)
 
@@ -109,32 +103,57 @@ def cold_start_eval(
             "Metrics có thể quá cao."
         )
 
+    # Build reverse lookup: cold_item_id → local index trong cold_item_list
+    cold_item_to_local: Dict[int, int] = {
+        item_id: local_idx
+        for local_idx, item_id in enumerate(cold_item_list)
+    }
+
     user_emb, item_emb = model.get_embeddings()
     user_emb = user_emb.to(device)
     item_emb = item_emb.to(device)
 
+    # Pre-build cold item embedding matrix (fixed, reuse across batches)
     cold_item_tensor = torch.tensor(cold_item_list, dtype=torch.long, device=device)
-    eval_users       = sorted(cold_test.keys())
+    cold_emb         = item_emb[cold_item_tensor]   # (n_cold, d)
 
-    all_ranked: List[np.ndarray] = []
-    all_gt:     List[List[int]]  = []
+    eval_users   = sorted(cold_test.keys())
+    all_ranked:  List[np.ndarray] = []
+    all_gt:      List[List[int]]  = []
 
     for start in range(0, len(eval_users), batch_size):
         batch_users = eval_users[start: start + batch_size]
-        u_emb       = user_emb[batch_users]
-        cold_emb    = item_emb[cold_item_tensor]
-        scores      = torch.matmul(u_emb, cold_emb.T)
+        B           = len(batch_users)
 
-        # Mask cold items đã seen trong train
+        u_emb  = user_emb[batch_users]                 # (B, d)
+        scores = torch.matmul(u_emb, cold_emb.T)       # (B, n_cold)
+
+        # [PERF-9 FIX] Vectorized mask — O(B + total_seen) thay vì O(B × n_cold)
+        #
+        # Bước 1: Với mỗi user trong batch, tìm cold items đã seen trong train
+        # Bước 2: Dùng advanced indexing để set -inf một lần
+        #
+        row_indices = []   # list of local user indices (0..B-1)
+        col_indices = []   # list of local cold item indices
+
         for local_i, uid in enumerate(batch_users):
-            train_seen = set(train_user2items.get(uid, []))
-            for j, cold_iid in enumerate(cold_item_list):
-                if cold_iid in train_seen:
-                    scores[local_i, j] = float("-inf")
+            train_seen = train_user2items.get(uid, [])
+            for item_id in train_seen:
+                local_j = cold_item_to_local.get(item_id)
+                if local_j is not None:
+                    row_indices.append(local_i)
+                    col_indices.append(local_j)
 
+        if row_indices:
+            ri = torch.tensor(row_indices, dtype=torch.long, device=device)
+            ci = torch.tensor(col_indices, dtype=torch.long, device=device)
+            scores[ri, ci] = float("-inf")
+
+        # Top-K ranking
         k_eff = min(max_k, n_cold)
         _, ranked_local = torch.topk(scores, k=k_eff, dim=-1)
-        ranked_global   = cold_item_tensor.cpu()[ranked_local.cpu()].numpy()
+        # Map local indices back to global item IDs
+        ranked_global = cold_item_tensor[ranked_local.cpu()].numpy()
 
         for local_i, uid in enumerate(batch_users):
             all_ranked.append(ranked_global[local_i])
@@ -143,7 +162,7 @@ def cold_start_eval(
     ranked_matrix = np.vstack(all_ranked)
     metrics_raw   = compute_all_metrics(ranked_matrix, all_gt, top_k_list)
 
-    # [v10] Thêm hậu tố '_cold' để phân biệt với warm metrics
+    # Thêm hậu tố '_cold' để phân biệt với warm metrics
     cold_metrics = {f"{k}_cold": v for k, v in metrics_raw.items()}
 
     logger.info("Cold metrics: " + " | ".join(
@@ -154,13 +173,12 @@ def cold_start_eval(
 
 class ColdEvaluator:
     """
-    [v10] Wrapper cho cold-start evaluation.
+    Wrapper cho cold-start evaluation (v10 format).
 
     Args:
         cold_dir:       path đến cold_XX/ directory
                         Chứa: cold_item_ids.txt, test_cold.txt
-        train_data_dir: path đến unified/ directory
-                        Dùng train.txt để mask training interactions
+        train_data_dir: path đến unified/ directory (dùng train.txt để mask)
         n_items:        tổng số items
         device:         torch device
     """
@@ -174,14 +192,11 @@ class ColdEvaluator:
         batch_size:     int = 512,
         top_k_list:     Optional[List[int]] = None,
     ) -> None:
-        # [v10] cold_item_ids.txt (không phải cold_items.txt)
         self.cold_items = load_cold_item_ids(cold_dir)
 
-        # Train gốc để mask
         self.train_user2items = _read_interaction_file(
             os.path.join(train_data_dir, "train.txt"))
 
-        # [v10] test_cold.txt (không phải test.txt)
         test_cold_path = os.path.join(cold_dir, "test_cold.txt")
         if not os.path.exists(test_cold_path):
             raise FileNotFoundError(
@@ -196,7 +211,7 @@ class ColdEvaluator:
         self.top_k_list = top_k_list or [10, 20]
 
         logger.info(
-            f"ColdEvaluator (v10): {len(self.cold_items):,} cold items | "
+            f"ColdEvaluator (v10-fix): {len(self.cold_items):,} cold items | "
             f"{len(self.test_user2items):,} test users"
         )
 
